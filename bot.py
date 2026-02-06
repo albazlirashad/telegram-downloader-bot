@@ -50,7 +50,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not url.startswith("http"):
         return
 
-    wait_msg = await update.message.reply_text("🔎 جاري جلب الجودات (باستخدام Cookies)...")
+    wait_msg = await update.message.reply_text("🔎 جاري جلب الجودات ...")
 
     try:
         ydl_opts = {
@@ -107,7 +107,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_download(user.id, user.username or user.first_name, url)
 
         ydl_opts = {
-            'format': f"{format_id}+bestaudio/best",
+           'format': f"{format_id}+bestaudio/best/best", # سيحاول دمج الجودة المختارة، وإذا فشل سيأخذ أفضل المتاح
             'outtmpl': filename,
             'merge_output_format': 'mp4',
             'cookiefile': 'cookies.txt',
@@ -189,5 +189,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
