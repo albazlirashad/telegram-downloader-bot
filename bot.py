@@ -21,11 +21,13 @@ import yt_dlp
 
 
 # ================== الإعدادات ==================
-TOKEN = "8501806873:AAEiuLn6HYGmdYo7Ss_fF9eJIUfelLm-eLw"
+TOKEN = "8501806873:AAHi_cDFWGHW2CavQBJkK1-im2TVeSUVM00"
 ADMIN_ID = 7795462538
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "users_data.db")
+
+COOKIES_PATH = os.path.join(BASE_DIR, "cookies.txt")
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -63,6 +65,48 @@ def save_download(user_id, username, url):
         logging.error(f"DB Error: {e}")
 
 
+# ================== إعدادات yt-dlp ==================
+def get_ydl_extract_opts():
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36"
+        }
+    }
+
+    # إذا cookies موجودة
+    if os.path.exists(COOKIES_PATH):
+        opts["cookiefile"] = COOKIES_PATH
+
+    return opts
+
+
+def get_ydl_download_opts(format_id, filename):
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "format": f"{format_id}+bestaudio/best",
+        "merge_output_format": "mp4",
+        "outtmpl": filename,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36"
+        }
+    }
+
+    # إذا cookies موجودة
+    if os.path.exists(COOKIES_PATH):
+        opts["cookiefile"] = COOKIES_PATH
+
+    return opts
+
+
 # ================== أوامر البوت ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -78,27 +122,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================== معالجة الرابط ==================
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
+
     if not url.startswith("http"):
         return
 
     wait_msg = await update.message.reply_text("🔎 جاري تحليل الرابط...")
 
     try:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android"]
-                }
-            }
-        }
-
-        # استخدام cookies فقط إذا كان الملف موجود
-        cookies_path = os.path.join(BASE_DIR, "cookies.txt")
-        if os.path.exists(cookies_path):
-            ydl_opts["cookiefile"] = cookies_path
+        ydl_opts = get_ydl_extract_opts()
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -109,8 +140,15 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = []
         seen = set()
 
+        # جلب جودات الفيديو المهمة فقط
         for f in formats:
             height = f.get("height")
+            vcodec = f.get("vcodec")
+
+            # تجاهل الصوت فقط
+            if vcodec == "none":
+                continue
+
             if height and height in (360, 480, 720, 1080) and height not in seen:
                 fmt_id = f.get("format_id")
                 size = f.get("filesize") or f.get("filesize_approx") or 0
@@ -144,9 +182,15 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logging.exception("Extract Error")
+
+        # رسالة أوضح
         await wait_msg.edit_text(
-            "❌ فشل جلب البيانات.\n"
-            "🔗 تأكد من أن الرابط صحيح أو جرّب رابطًا آخر."
+            "❌ فشل جلب بيانات الفيديو.\n\n"
+            "📌 السبب غالباً:\n"
+            "• يوتيوب حاجب Render IP\n"
+            "• أو تحتاج cookies.txt\n"
+            "• أو yt-dlp قديم\n\n"
+            "✅ جرّب فيديو آخر أو تأكد من cookies."
         )
 
 
@@ -164,23 +208,12 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     status = await query.edit_message_text("📥 جاري التحميل...")
 
-    filename = f"video_{user.id}_{int(datetime.now().timestamp())}.mp4"
+    filename = os.path.join(BASE_DIR, f"video_{user.id}_{int(datetime.now().timestamp())}.mp4")
 
     try:
         save_download(user.id, user.username or user.first_name, url)
 
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "format": f"{format_id}+bestaudio/best",
-            "merge_output_format": "mp4",
-            "outtmpl": filename,
-            "noplaylist": True,
-        }
-
-        cookies_path = os.path.join(BASE_DIR, "cookies.txt")
-        if os.path.exists(cookies_path):
-            ydl_opts["cookiefile"] = cookies_path
+        ydl_opts = get_ydl_download_opts(format_id, filename)
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -190,14 +223,18 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         size = os.path.getsize(filename)
+
+        # حد تيليجرام للبوتات غالباً 50MB
         if size > 50 * 1024 * 1024:
             await status.edit_text(
                 f"⚠️ حجم الفيديو {round(size/1024/1024,1)}MB\n"
-                "أكبر من حد تيليجرام (50MB)."
+                "أكبر من حد تيليجرام (50MB).\n\n"
+                "🔻 اختر جودة أقل."
             )
             return
 
         await status.edit_text("📤 جاري الإرسال...")
+
         with open(filename, "rb") as v:
             await context.bot.send_video(
                 chat_id=query.message.chat_id,
@@ -205,6 +242,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 supports_streaming=True,
                 caption="✅ تم التحميل بنجاح"
             )
+
         await status.delete()
 
     except Exception as e:
@@ -255,4 +293,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
