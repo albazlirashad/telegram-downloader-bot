@@ -11,7 +11,7 @@ import yt_dlp
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- الإعدادات الأساسية (تأكد من صحتها) ---
-TOKEN = "8501806873:AAHQUDsZwAB1ZTsBTjnBnVaVO60vGA8W0Rw"
+TOKEN = "8501806873:AAGHntt7S4TZoObTGdKpO_hhIeqUspi3U_Q"
 ADMIN_ID = 7795462538  # معرفك الخاص للتحكم في الإحصائيات
 
 # --- إعداد قاعدة البيانات ---
@@ -189,4 +189,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
