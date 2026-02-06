@@ -1,7 +1,6 @@
 import os
 import sqlite3
 import logging
-import re
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
@@ -30,19 +29,21 @@ def init_db():
     conn.close()
 
 def save_download(user_id, username, url):
-    conn = sqlite3.connect('users_data.db')
-    cursor = conn.cursor()
-    cursor.execute('INSERT INTO downloads VALUES (?, ?, ?, ?)', 
-                   (user_id, username, url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('users_data.db')
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO downloads VALUES (?, ?, ?, ?)', 
+                       (user_id, username, url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Error saving to DB: {e}")
 
 # --- وظائف البوت الرئيسية ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
     await update.message.reply_text(
-        f"👋 أهلاً {user.first_name}!\n\n"
-        "أنا بوت تحميل فيديوهات احترافي. أرسل لي أي رابط (YouTube, TikTok, Instagram) وسأعرض لك الجودات المتاحة."
+        f"👋 أهلاً بك!\n\n"
+        "أرسل لي أي رابط من (YouTube, TikTok, Instagram) وسأقوم بتحميله لك بأفضل جودة متاحة."
     )
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -50,7 +51,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not url.startswith("http"):
         return
 
-    wait_msg = await update.message.reply_text("🔎 جاري جلب الجودات المتاحة...")
+    wait_msg = await update.message.reply_text("🔎 جاري تحليل الرابط وجلب الجودات...")
 
     try:
         ydl_opts = {
@@ -66,19 +67,18 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons = []
             seen_res = set()
             
-            # ترتيب الجودات الشائعة
+            # ترتيب الجودات الشائعة تنازلياً
             for f in reversed(formats):
                 res = f.get('height')
-                # نركز على الصيغ التي تحتوي على فيديو وصوت أو فيديو قابل للدمج
-                if res and res not in seen_res and res in [144, 240, 360, 480, 720, 1080]:
+                # نختار الجودات القياسية فقط للعرض
+                if res and res not in seen_res and res in [360, 480, 720, 1080]:
                     filesize = f.get('filesize') or f.get('filesize_approx') or 0
                     size_mb = round(filesize / (1024 * 1024), 1)
                     
-                    prefix = "✅" if size_mb < 50 else "⚠️"
-                    label = f"{prefix} {res}p ({size_mb} MB)"
-                    
-                    # نرسل format_id لضمان تحميل ما اختاره المستخدم بالضبط
-                    buttons.append([InlineKeyboardButton(label, callback_data=f"{f['format_id']}|{url}")])
+                    label = f"🎬 {res}p" + (f" ({size_mb} MB)" if size_mb > 0 else "")
+                    # نرسل طلب الجودة مع طلب أفضل صوت مدمج
+                    callback_data = f"{f['format_id']}+bestaudio/best|{url}"
+                    buttons.append([InlineKeyboardButton(label, callback_data=callback_data)])
                     seen_res.add(res)
 
             if not buttons:
@@ -91,30 +91,36 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     except Exception as e:
-        await wait_msg.edit_text(f"❌ خطأ في جلب البيانات.\n\nالتفاصيل: {str(e)}")
+        logging.error(f"Error in handle_url: {e}")
+        await wait_msg.edit_text(f"❌ فشل جلب البيانات. تأكد من أن الرابط صحيح ومن وجود ملف cookies.txt")
 
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    format_data, url = query.data.split('|')
-    user = query.from_user
-    
-    status_msg = await query.edit_message_text("📥 جاري التحميل والدمج...")
+    # استخراج البيانات من الكولباك
+    try:
+        format_selection, url = query.data.split('|')
+    except ValueError:
+        await query.edit_message_text("❌ خطأ في البيانات المستلمة.")
+        return
 
-    filename = f"vid_{user.id}_{query.message.message_id}.mp4"
+    user = query.from_user
+    status_msg = await query.edit_message_text("📥 جاري التحميل... قد يستغرق الأمر دقيقة.")
+
+    # اسم ملف فريد لكل عملية
+    filename = f"video_{user.id}_{datetime.now().strftime('%M%S')}.mp4"
 
     try:
         save_download(user.id, user.username or user.first_name, url)
 
-        # التعديل الجوهري هنا: نستخدم الجودة المختارة + أفضل صوت متاح
         ydl_opts = {
-            'format': f'{format_data}+bestaudio/best', 
+            'format': format_selection,
             'outtmpl': filename,
             'merge_output_format': 'mp4',
             'cookiefile': 'cookies.txt',
             'quiet': True,
-            'postprocessor_args': ['-c:v', 'copy', '-c:a', 'aac'] # لسرعة الدمج
+            'no_warnings': True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -123,57 +129,51 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(filename):
             filesize = os.path.getsize(filename)
             if filesize > 50 * 1024 * 1024:
-                await status_msg.edit_text("⚠️ الحجم {round(filesize/1024/1024, 1)}MB تجاوز حد تيليجرام (50MB).")
+                await status_msg.edit_text(f"⚠️ حجم الملف ({round(filesize/1024/1024, 1)}MB) أكبر من مسموحات تيليجرام (50MB).")
             else:
-                await status_msg.edit_text("📤 جاري الإرسال...")
+                await status_msg.edit_text("📤 جاري إرسال الفيديو...")
                 with open(filename, 'rb') as video:
                     await context.bot.send_video(
                         chat_id=query.message.chat_id,
                         video=video,
                         supports_streaming=True,
-                        caption="✅ تم التحميل بنجاح!"
+                        caption="✅ تم التحميل بنجاح عبر بوتك."
                     )
                 await status_msg.delete()
-        
-        if os.path.exists(filename): os.remove(filename)
+        else:
+            await status_msg.edit_text("❌ عذراً، تعذر العثور على الملف بعد التحميل.")
 
     except Exception as e:
-        await query.message.reply_text(f"❌ فشل التحميل: {str(e)}")
-        if os.path.exists(filename): os.remove(filename)
+        logging.error(f"Download Error: {e}")
+        await query.message.reply_text(f"❌ فشل التحميل. يوتيوب قد يرفض هذه الجودة حالياً، جرب جودة أخرى.")
+    
+    finally:
+        if os.path.exists(filename):
+            os.remove(filename)
 
-# --- نظام الإحصائيات ---
+# --- نظام الإحصائيات للمسؤول ---
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+    if update.effective_user.id != ADMIN_ID: return
     
     conn = sqlite3.connect('users_data.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT DISTINCT user_id, username FROM downloads')
-    users = cursor.fetchall()
-    
-    if not users:
-        await update.message.reply_text("📊 السجل فارغ.")
-        conn.close()
-        return
-
-    report = "📊 **إحصائيات النشاط:**\n"
-    for user_id, username in users:
-        cursor.execute('SELECT COUNT(*) FROM downloads WHERE user_id = ?', (user_id,))
-        count = cursor.fetchone()[0]
-        report += f"\n👤 {username} (`{user_id}`): {count} تحميلات"
-    
+    cursor.execute('SELECT COUNT(DISTINCT user_id), COUNT(*) FROM downloads')
+    res = cursor.fetchone()
     conn.close()
-    await update.message.reply_text(report, parse_mode='Markdown')
+    
+    await update.message.reply_text(f"📊 إحصائيات البوت:\n\n👥 عدد المستخدمين: {res[0]}\n📥 إجمالي التحميلات: {res[1]}")
 
 def main():
     init_db()
-    app = Application.builder().token(TOKEN).read_timeout(200).write_timeout(200).build()
+    # بناء التطبيق مع زيادة مهلات الانتظار للشبكة
+    app = Application.builder().token(TOKEN).connect_timeout(30).read_timeout(30).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(download_callback))
     
+    logging.info("البوت بدأ العمل بنجاح...")
     app.run_polling()
 
 if __name__ == '__main__':
