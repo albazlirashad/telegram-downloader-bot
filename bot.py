@@ -2,179 +2,256 @@ import os
 import sqlite3
 import logging
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters
+)
+
 import yt_dlp
 
-# إعداد السجلات لمراقبة أداء البوت في Render
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- الإعدادات الأساسية ---
-TOKEN = "8501806873:AAGHntt7S4TZoObTGdKpO_hhIeqUspi3U_Q"
-ADMIN_ID = 7795462538 
+# ================== الإعدادات ==================
+TOKEN = "PUT_YOUR_NEW_BOT_TOKEN_HERE"
+ADMIN_ID = 7795462538
 
-# --- إعداد قاعدة البيانات ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "users_data.db")
+
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+
+# ================== قاعدة البيانات ==================
 def init_db():
-    conn = sqlite3.connect('users_data.db')
-    cursor = conn.cursor()
-    cursor.execute('''
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS downloads (
             user_id INTEGER,
             username TEXT,
             video_url TEXT,
             timestamp TEXT
         )
-    ''')
+    """)
     conn.commit()
     conn.close()
 
+
 def save_download(user_id, username, url):
     try:
-        conn = sqlite3.connect('users_data.db')
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO downloads VALUES (?, ?, ?, ?)', 
-                       (user_id, username, url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO downloads VALUES (?, ?, ?, ?)",
+            (user_id, username, url, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
         conn.commit()
         conn.close()
     except Exception as e:
-        logging.error(f"Error saving to DB: {e}")
+        logging.error(f"DB Error: {e}")
 
-# --- وظائف البوت الرئيسية ---
+
+# ================== أوامر البوت ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"👋 أهلاً بك!\n\n"
-        "أرسل لي أي رابط من (YouTube, TikTok, Instagram) وسأقوم بتحميله لك بأفضل جودة متاحة."
+        "👋 أهلاً بك!\n\n"
+        "أرسل رابط فيديو من:\n"
+        "• YouTube\n"
+        "• TikTok\n"
+        "• Instagram\n\n"
+        "وسأحمله لك بأفضل جودة متاحة 🎬"
     )
 
+
+# ================== معالجة الرابط ==================
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
+    url = update.message.text.strip()
     if not url.startswith("http"):
         return
 
-    wait_msg = await update.message.reply_text("🔎 جاري تحليل الرابط وجلب الجودات...")
+    wait_msg = await update.message.reply_text("🔎 جاري تحليل الرابط...")
 
     try:
         ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'cookiefile': 'cookies.txt' 
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android"]
+                }
+            }
         }
-        
+
+        # استخدام cookies فقط إذا كان الملف موجود
+        cookies_path = os.path.join(BASE_DIR, "cookies.txt")
+        if os.path.exists(cookies_path):
+            ydl_opts["cookiefile"] = cookies_path
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            formats = info.get('formats', [])
-            
-            buttons = []
-            seen_res = set()
-            
-            # ترتيب الجودات الشائعة تنازلياً
-            for f in reversed(formats):
-                res = f.get('height')
-                # نختار الجودات القياسية فقط للعرض
-                if res and res not in seen_res and res in [360, 480, 720, 1080]:
-                    filesize = f.get('filesize') or f.get('filesize_approx') or 0
-                    size_mb = round(filesize / (1024 * 1024), 1)
-                    
-                    label = f"🎬 {res}p" + (f" ({size_mb} MB)" if size_mb > 0 else "")
-                    # نرسل طلب الجودة مع طلب أفضل صوت مدمج
-                    callback_data = f"{f['format_id']}+bestaudio/best|{url}"
-                    buttons.append([InlineKeyboardButton(label, callback_data=callback_data)])
-                    seen_res.add(res)
 
-            if not buttons:
-                buttons.append([InlineKeyboardButton("📦 أفضل جودة متاحة", callback_data=f"best|{url}")])
+        title = info.get("title", "فيديو")
+        formats = info.get("formats", [])
 
-            await wait_msg.edit_text(
-                f"🎬 **العنوان:** {info.get('title')[:60]}...\n\nاختر الجودة المطلوب تحميلها:",
-                reply_markup=InlineKeyboardMarkup(buttons[:8]),
-                parse_mode='Markdown'
-            )
+        buttons = []
+        seen = set()
+
+        for f in formats:
+            height = f.get("height")
+            if height and height in (360, 480, 720, 1080) and height not in seen:
+                fmt_id = f.get("format_id")
+                size = f.get("filesize") or f.get("filesize_approx") or 0
+                size_mb = round(size / (1024 * 1024), 1)
+
+                label = f"🎬 {height}p"
+                if size_mb > 0:
+                    label += f" ({size_mb} MB)"
+
+                buttons.append([
+                    InlineKeyboardButton(
+                        label,
+                        callback_data=f"{fmt_id}|{url}"
+                    )
+                ])
+                seen.add(height)
+
+        if not buttons:
+            buttons.append([
+                InlineKeyboardButton(
+                    "📦 أفضل جودة متاحة",
+                    callback_data=f"best|{url}"
+                )
+            ])
+
+        await wait_msg.edit_text(
+            f"🎬 **{title[:60]}**\n\nاختر الجودة:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown"
+        )
 
     except Exception as e:
-        logging.error(f"Error in handle_url: {e}")
-        await wait_msg.edit_text(f"❌ فشل جلب البيانات. تأكد من أن الرابط صحيح ومن وجود ملف cookies.txt")
+        logging.exception("Extract Error")
+        await wait_msg.edit_text(
+            "❌ فشل جلب البيانات.\n"
+            "🔗 تأكد من أن الرابط صحيح أو جرّب رابطًا آخر."
+        )
 
+
+# ================== التحميل ==================
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    # استخراج البيانات من الكولباك
+
     try:
-        format_selection, url = query.data.split('|')
+        format_id, url = query.data.split("|")
     except ValueError:
-        await query.edit_message_text("❌ خطأ في البيانات المستلمة.")
+        await query.edit_message_text("❌ خطأ في البيانات.")
         return
 
     user = query.from_user
-    status_msg = await query.edit_message_text("📥 جاري التحميل... قد يستغرق الأمر دقيقة.")
+    status = await query.edit_message_text("📥 جاري التحميل...")
 
-    # اسم ملف فريد لكل عملية
-    filename = f"video_{user.id}_{datetime.now().strftime('%M%S')}.mp4"
+    filename = f"video_{user.id}_{int(datetime.now().timestamp())}.mp4"
 
     try:
         save_download(user.id, user.username or user.first_name, url)
 
         ydl_opts = {
-            'format': format_selection,
-            'outtmpl': filename,
-            'merge_output_format': 'mp4',
-            'cookiefile': 'cookies.txt',
-            'quiet': True,
-            'no_warnings': True,
+            "quiet": True,
+            "no_warnings": True,
+            "format": f"{format_id}+bestaudio/best",
+            "merge_output_format": "mp4",
+            "outtmpl": filename,
+            "noplaylist": True,
         }
+
+        cookies_path = os.path.join(BASE_DIR, "cookies.txt")
+        if os.path.exists(cookies_path):
+            ydl_opts["cookiefile"] = cookies_path
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        if os.path.exists(filename):
-            filesize = os.path.getsize(filename)
-            if filesize > 50 * 1024 * 1024:
-                await status_msg.edit_text(f"⚠️ حجم الملف ({round(filesize/1024/1024, 1)}MB) أكبر من مسموحات تيليجرام (50MB).")
-            else:
-                await status_msg.edit_text("📤 جاري إرسال الفيديو...")
-                with open(filename, 'rb') as video:
-                    await context.bot.send_video(
-                        chat_id=query.message.chat_id,
-                        video=video,
-                        supports_streaming=True,
-                        caption="✅ تم التحميل بنجاح عبر بوتك."
-                    )
-                await status_msg.delete()
-        else:
-            await status_msg.edit_text("❌ عذراً، تعذر العثور على الملف بعد التحميل.")
+        if not os.path.exists(filename):
+            await status.edit_text("❌ فشل إنشاء الملف.")
+            return
+
+        size = os.path.getsize(filename)
+        if size > 50 * 1024 * 1024:
+            await status.edit_text(
+                f"⚠️ حجم الفيديو {round(size/1024/1024,1)}MB\n"
+                "أكبر من حد تيليجرام (50MB)."
+            )
+            return
+
+        await status.edit_text("📤 جاري الإرسال...")
+        with open(filename, "rb") as v:
+            await context.bot.send_video(
+                chat_id=query.message.chat_id,
+                video=v,
+                supports_streaming=True,
+                caption="✅ تم التحميل بنجاح"
+            )
+        await status.delete()
 
     except Exception as e:
-        logging.error(f"Download Error: {e}")
-        await query.message.reply_text(f"❌ فشل التحميل. يوتيوب قد يرفض هذه الجودة حالياً، جرب جودة أخرى.")
-    
+        logging.exception("Download Error")
+        await query.message.reply_text("❌ فشل التحميل، جرّب جودة أخرى.")
+
     finally:
         if os.path.exists(filename):
             os.remove(filename)
 
-# --- نظام الإحصائيات للمسؤول ---
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    
-    conn = sqlite3.connect('users_data.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(DISTINCT user_id), COUNT(*) FROM downloads')
-    res = cursor.fetchone()
-    conn.close()
-    
-    await update.message.reply_text(f"📊 إحصائيات البوت:\n\n👥 عدد المستخدمين: {res[0]}\n📥 إجمالي التحميلات: {res[1]}")
 
+# ================== إحصائيات ==================
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(DISTINCT user_id), COUNT(*) FROM downloads")
+    users, downloads = cur.fetchone()
+    conn.close()
+
+    await update.message.reply_text(
+        f"📊 إحصائيات البوت:\n\n"
+        f"👥 المستخدمون: {users}\n"
+        f"📥 التحميلات: {downloads}"
+    )
+
+
+# ================== تشغيل البوت ==================
 def main():
     init_db()
-    # بناء التطبيق مع زيادة مهلات الانتظار للشبكة
-    app = Application.builder().token(TOKEN).connect_timeout(30).read_timeout(30).build()
-    
+
+    app = Application.builder() \
+        .token(TOKEN) \
+        .connect_timeout(30) \
+        .read_timeout(30) \
+        .build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(download_callback))
-    
-    logging.info("البوت بدأ العمل بنجاح...")
+
+    logging.info("🚀 Bot is running...")
     app.run_polling()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
