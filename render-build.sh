@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
-apt-get -y update
-apt-get -y install ffmpeg nodejs
+# تثبيت ffmpeg و nodejs
+# Render سيقوم بتشغيل هذا كـ root تلقائياً عند استخدامه بشكل صحيح
+apt-get update && apt-get install -y ffmpeg nodejs
+
+# تثبيت مكتبات بايثون
 pip install -r requirements.txt
