@@ -107,7 +107,7 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_download(user.id, user.username or user.first_name, url)
 
         ydl_opts = {
-           'format': f"{format_id}+bestaudio/best/best", # سيحاول دمج الجودة المختارة، وإذا فشل سيأخذ أفضل المتاح
+           'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'outtmpl': filename,
             'merge_output_format': 'mp4',
             'cookiefile': 'cookies.txt',
@@ -189,6 +189,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
