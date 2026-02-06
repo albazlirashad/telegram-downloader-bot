@@ -10,9 +10,9 @@ import yt_dlp
 # إعداد السجلات لمراقبة أداء البوت في Render
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- الإعدادات الأساسية (تأكد من صحتها) ---
+# --- الإعدادات الأساسية ---
 TOKEN = "8501806873:AAGHntt7S4TZoObTGdKpO_hhIeqUspi3U_Q"
-ADMIN_ID = 7795462538  # معرفك الخاص للتحكم في الإحصائيات
+ADMIN_ID = 7795462538 
 
 # --- إعداد قاعدة البيانات ---
 def init_db():
@@ -50,13 +50,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not url.startswith("http"):
         return
 
-    wait_msg = await update.message.reply_text("🔎 جاري جلب الجودات ...")
+    wait_msg = await update.message.reply_text("🔎 جاري جلب الجودات المتاحة...")
 
     try:
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'cookiefile': 'cookies.txt'  # ضروري لتجاوز حظر "Sign in to confirm"
+            'cookiefile': 'cookies.txt' 
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -69,6 +69,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # ترتيب الجودات الشائعة
             for f in reversed(formats):
                 res = f.get('height')
+                # نركز على الصيغ التي تحتوي على فيديو وصوت أو فيديو قابل للدمج
                 if res and res not in seen_res and res in [144, 240, 360, 480, 720, 1080]:
                     filesize = f.get('filesize') or f.get('filesize_approx') or 0
                     size_mb = round(filesize / (1024 * 1024), 1)
@@ -76,11 +77,12 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     prefix = "✅" if size_mb < 50 else "⚠️"
                     label = f"{prefix} {res}p ({size_mb} MB)"
                     
+                    # نرسل format_id لضمان تحميل ما اختاره المستخدم بالضبط
                     buttons.append([InlineKeyboardButton(label, callback_data=f"{f['format_id']}|{url}")])
                     seen_res.add(res)
 
             if not buttons:
-                buttons.append([InlineKeyboardButton("📦 جودة تلقائية", callback_data=f"best|{url}")])
+                buttons.append([InlineKeyboardButton("📦 أفضل جودة متاحة", callback_data=f"best|{url}")])
 
             await wait_msg.edit_text(
                 f"🎬 **العنوان:** {info.get('title')[:60]}...\n\nاختر الجودة المطلوب تحميلها:",
@@ -89,37 +91,39 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     except Exception as e:
-        await wait_msg.edit_text(f"❌ خطأ: تأكد من وجود ملف cookies.txt\n\nالتفاصيل: {str(e)}")
+        await wait_msg.edit_text(f"❌ خطأ في جلب البيانات.\n\nالتفاصيل: {str(e)}")
 
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    format_id, url = query.data.split('|')
+    format_data, url = query.data.split('|')
     user = query.from_user
     
-    status_msg = await query.edit_message_text("📥 جاري التحميل والدمج (قد يستغرق وقتاً)...")
+    status_msg = await query.edit_message_text("📥 جاري التحميل والدمج...")
 
-    # اسم الملف فريد لمنع تداخل الطلبات
     filename = f"vid_{user.id}_{query.message.message_id}.mp4"
 
     try:
         save_download(user.id, user.username or user.first_name, url)
 
+        # التعديل الجوهري هنا: نستخدم الجودة المختارة + أفضل صوت متاح
         ydl_opts = {
-           'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': f'{format_data}+bestaudio/best', 
             'outtmpl': filename,
             'merge_output_format': 'mp4',
             'cookiefile': 'cookies.txt',
-            'quiet': True
+            'quiet': True,
+            'postprocessor_args': ['-c:v', 'copy', '-c:a', 'aac'] # لسرعة الدمج
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
         if os.path.exists(filename):
-            if os.path.getsize(filename) > 50 * 1024 * 1024:
-                await status_msg.edit_text("⚠️ حجم الفيديو تجاوز 50MB. تيليجرام لا يسمح للبوتات بإرسال أكثر من ذلك.")
+            filesize = os.path.getsize(filename)
+            if filesize > 50 * 1024 * 1024:
+                await status_msg.edit_text("⚠️ الحجم {round(filesize/1024/1024, 1)}MB تجاوز حد تيليجرام (50MB).")
             else:
                 await status_msg.edit_text("📤 جاري الإرسال...")
                 with open(filename, 'rb') as video:
@@ -127,69 +131,50 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         chat_id=query.message.chat_id,
                         video=video,
                         supports_streaming=True,
-                        caption="✅ تم التحميل بواسطة بوتك الخاص."
+                        caption="✅ تم التحميل بنجاح!"
                     )
                 await status_msg.delete()
         
-        # حذف الملف فوراً لتوفير مساحة السيرفر
         if os.path.exists(filename): os.remove(filename)
 
     except Exception as e:
-        await query.message.reply_text(f"❌ فشل أثناء التحميل: {str(e)}")
+        await query.message.reply_text(f"❌ فشل التحميل: {str(e)}")
         if os.path.exists(filename): os.remove(filename)
 
-# --- نظام إحصائيات المسؤول (مرتب حسب المستخدمين) ---
+# --- نظام الإحصائيات ---
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     
     conn = sqlite3.connect('users_data.db')
     cursor = conn.cursor()
-    
-    # جلب أسماء المستخدمين الفريدين
     cursor.execute('SELECT DISTINCT user_id, username FROM downloads')
     users = cursor.fetchall()
     
     if not users:
-        await update.message.reply_text("📊 السجل فارغ حالياً.")
+        await update.message.reply_text("📊 السجل فارغ.")
         conn.close()
         return
 
-    report = "📊 **سجل نشاط البوت المجمع:**\n━━━━━━━━━━━━━━━\n"
+    report = "📊 **إحصائيات النشاط:**\n"
     for user_id, username in users:
-        report += f"\n👤 **المستخدم:** {username} (`{user_id}`)\n"
-        cursor.execute('SELECT video_url, timestamp FROM downloads WHERE user_id = ?', (user_id,))
-        downloads = cursor.fetchall()
-        for url, time in downloads:
-            short_url = url[:25] + "..." if len(url) > 25 else url
-            report += f"  ├ 🔗 {short_url}\n  └ 📅 {time}\n"
-        report += "━━━━━━━━━━━━━━━"
-
-    conn.close()
+        cursor.execute('SELECT COUNT(*) FROM downloads WHERE user_id = ?', (user_id,))
+        count = cursor.fetchone()[0]
+        report += f"\n👤 {username} (`{user_id}`): {count} تحميلات"
     
-    # تقسيم الرسالة إذا كانت طويلة جداً
-    if len(report) > 4096:
-        for i in range(0, len(report), 4096):
-            await update.message.reply_text(report[i:i+4096], parse_mode='Markdown')
-    else:
-        await update.message.reply_text(report, parse_mode='Markdown')
+    conn.close()
+    await update.message.reply_text(report, parse_mode='Markdown')
 
-# --- تشغيل البوت ---
 def main():
     init_db()
-    app = Application.builder().token(TOKEN).read_timeout(180).write_timeout(180).build()
+    app = Application.builder().token(TOKEN).read_timeout(200).write_timeout(200).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(download_callback))
     
-    print("✅ البوت المعدل يعمل الآن بنجاح...")
     app.run_polling()
 
 if __name__ == '__main__':
     main()
-
-
-
-
