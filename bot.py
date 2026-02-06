@@ -21,7 +21,7 @@ import yt_dlp
 
 
 # ================== الإعدادات ==================
-TOKEN = "PUT_YOUR_NEW_BOT_TOKEN_HERE"
+TOKEN = "8501806873:AAEiuLn6HYGmdYo7Ss_fF9eJIUfelLm-eLw"
 ADMIN_ID = 7795462538
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -255,3 +255,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
